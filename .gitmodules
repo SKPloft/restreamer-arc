@@ -1,0 +1,9 @@
+[submodule "third_party/ffmpeg"]
+	path = third_party/ffmpeg
+	url = https://github.com/SKPloft/ffmpeg-arc.git
+[submodule "third_party/core"]
+	path = third_party/core
+	url = https://github.com/SKPloft/core-arc.git
+[submodule "third_party/restreamer-ui"]
+	path = third_party/restreamer-ui
+	url = https://github.com/SKPloft/restreamer-ui-arc.git

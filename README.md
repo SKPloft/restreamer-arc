@@ -111,34 +111,85 @@ Documentation is available on [docs.datarhei.com/restreamer](https://docs.datarh
 
 ## Development
 
-### Create a custom image (bundle):
+### Submodule workspace for this fork
 
-#### [Restreamer FFmpeg](https://github.com/datarhei/ffmpeg):
+This repository can act as the superproject for the three source repositories that feed the final bundle image:
+
+- `third_party/ffmpeg` -> `https://github.com/SKPloft/ffmpeg-arc`
+- `third_party/core` -> `https://github.com/SKPloft/core-arc`
+- `third_party/restreamer-ui` -> `https://github.com/SKPloft/restreamer-ui-arc`
+
+Add the submodules once:
+
+```sh
+./scripts/add-submodules.sh
 ```
-$ git clone github.com/datarhei/ffmpeg
-$ cd ffmpeg
+
+If you prefer to add them manually:
+
+```sh
+git submodule add https://github.com/SKPloft/ffmpeg-arc.git third_party/ffmpeg
+git submodule add https://github.com/SKPloft/core-arc.git third_party/core
+git submodule add https://github.com/SKPloft/restreamer-ui-arc.git third_party/restreamer-ui
+git submodule update --init --recursive
+```
+
+Build the full bundle from the submodule sources with a single entrypoint:
+
+```sh
+make build
+make build FFMPEG_FLAVOR=rpi
+make build FFMPEG_FLAVOR=cuda
+make build FFMPEG_FLAVOR=vaapi
+```
+
+By default this produces the following local image tags:
+
+- `restreamer-arc-ffmpeg:<flavor>`
+- `restreamer-arc-core:local`
+- `restreamer-arc-restreamer-ui:local`
+- `restreamer-arc:<flavor>`
+
+To run the locally built bundle:
+
+```sh
+make run
+```
+
+If you need `buildx`, override `DOCKER_BUILD`, for example:
+
+```sh
+make build DOCKER_BUILD='docker buildx build --load'
+```
+
+### Manual image assembly (still supported)
+
+#### [Restreamer FFmpeg](https://github.com/SKPloft/ffmpeg-arc):
+```
+$ git clone https://github.com/SKPloft/ffmpeg-arc
+$ cd ffmpeg-arc
 $ docker build -f Dockerfile.alpine -t myffmpeg .
 ```
 
-#### [Restreamer backend](https://github.com/datarhei/core) (Golang):
+#### [Restreamer backend](https://github.com/SKPloft/core-arc) (Golang):
 
 ```
-$ git clone github.com/datarhei/core
-$ cd core
+$ git clone https://github.com/SKPloft/core-arc
+$ cd core-arc
 $ docker build -t mycore .
 ```
 
-#### [Restreamer interface](https://github.com/datarhei/restreamer-ui) (React):
+#### [Restreamer interface](https://github.com/SKPloft/restreamer-ui-arc) (React):
 ```
-$ git clone github.com/datarhei/restreamer-ui
-$ cd restreamer-ui
+$ git clone https://github.com/SKPloft/restreamer-ui-arc
+$ cd restreamer-ui-arc
 $ docker build -t myrsui .
 ```
 
 #### Restreamer bundle:
 ```
-$ git clone github.com/datarhei/restreamer
-$ cd restreamer
+$ git clone https://github.com/SKPloft/restreamer-arc
+$ cd restreamer-arc
 $ docker build --build-arg FFMPEG_IMAGE=myffmpeg --build-arg CORE_IMAGE=mycore --build-arg RESTREAMER_UI_IMAGE=myrsui -t myrestreamer .
 $ docker run -it --rm -p 8080:8080 myrestreamer
 ```

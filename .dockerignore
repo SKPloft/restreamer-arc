@@ -1,0 +1,7 @@
+# The bundle image only needs the assembly files from this repo; keep submodule sources out of the root context.
+*
+!Dockerfile
+!CHANGELOG.md
+!run.sh
+!ui-root/
+!ui-root/**

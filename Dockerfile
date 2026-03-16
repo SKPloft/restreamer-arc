@@ -9,7 +9,8 @@ FROM $FFMPEG_IMAGE
 COPY --from=core /core /core
 COPY --from=restreamer-ui /ui/build /core/ui
 
-ADD https://raw.githubusercontent.com/datarhei/restreamer/2.x/CHANGELOG.md /core/ui/CHANGELOG.md
+# Use the vendored changelog so the bundle build stays reproducible without fetching from GitHub.
+COPY ./CHANGELOG.md /core/ui/CHANGELOG.md
 COPY ./run.sh /core/bin/run.sh
 COPY ./ui-root /core/ui-root
 

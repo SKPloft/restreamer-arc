@@ -150,6 +150,39 @@ By default this produces the following local image tags:
 - `restreamer-arc-restreamer-ui:local`
 - `restreamer-arc:<flavor>`
 
+#### Upstream-supported combos vs local workspace
+
+This fork now keeps one generated combo catalog at `combinations/catalog.json`. It is generated from `.github/workflows/build_bundle.yaml` and `.github/workflows/build_bundle_dev.yaml`, so it reflects the upstream-derived bundle combinations that this repo publishes or tracks.
+
+Use the catalog to compare those upstream-supported combos with the versions pinned in the current submodule workspace:
+
+```sh
+make list-combos
+make show-combo COMBO=main/default
+make show-combo COMBO=dev/cuda
+```
+
+Combo IDs currently available:
+
+- `main/default`
+- `main/rpi`
+- `main/vaapi`
+- `main/cuda`
+- `dev/default`
+- `dev/rpi`
+- `dev/vaapi`
+- `dev/cuda`
+
+`make list-combos` prints the upstream combo ID, image tags, platforms, and a drift status. `make show-combo` prints the upstream tags plus the local `FFMPEG_FLAVOR` mapping, pinned UI/core/ffmpeg metadata, and any drift markers.
+
+Drift markers mean the local workspace does not currently match the selected upstream combo. Typical drift in this fork includes local ffmpeg env files still pinned to `5.1.3` on Alpine `3.16` or Ubuntu `20.04`, while upstream bundle workflows now reference ffmpeg `6.1.1` or `7.1.1` on newer base images. `manual_review` markers mean the upstream workflow resolves a version dynamically, so the local workspace should be compared manually instead of being treated as equivalent.
+
+To refresh the generated catalog after updating workflow matrices or local pins:
+
+```sh
+make generate-combo-catalog
+```
+
 To run the locally built bundle:
 
 ```sh

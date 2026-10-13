@@ -16,6 +16,10 @@ CORE_IMAGE ?= $(IMAGE_REPOSITORY)-core
 RESTREAMER_UI_IMAGE ?= $(IMAGE_REPOSITORY)-restreamer-ui
 BUNDLE_IMAGE ?= $(IMAGE_REPOSITORY)
 
+RUBY ?= ruby
+COMBO_CATALOG_SCRIPT := scripts/generate_combo_catalog.rb
+COMBO_CATALOG := combinations/catalog.json
+
 FFMPEG_FLAVOR ?= default
 FFMPEG_TAG ?= $(FFMPEG_FLAVOR)
 CORE_TAG ?= local
@@ -53,6 +57,7 @@ CORE_GOLANG_IMAGE := golang:1.23-alpine3.20
 .PHONY: help submodules-add submodules-update check-submodules \
 	build-ffmpeg build-core build-ui build \
 	build-default build-rpi build-cuda build-vaapi \
+	generate-combo-catalog list-combos show-combo \
 	run print-images
 
 help:
@@ -63,9 +68,11 @@ help:
 	@printf '%-18s %s\n' 'build-rpi' 'Build the bundle with ffmpeg rpi flavor'
 	@printf '%-18s %s\n' 'build-cuda' 'Build the bundle with ffmpeg cuda flavor'
 	@printf '%-18s %s\n' 'build-vaapi' 'Build the bundle with ffmpeg vaapi flavor'
+	@printf '%-18s %s\n' 'list-combos' 'List upstream-supported bundle combos with local drift status'
+	@printf '%-18s %s\n' 'show-combo' 'Show details for one combo (set COMBO=<channel/flavor>)'
 	@printf '%-18s %s\n' 'run' 'Run the locally built bundle image'
 	@printf '%-18s %s\n' 'print-images' 'Show the image tags used by the current configuration'
-	@printf '\nUse FFMPEG_FLAVOR={default|rpi|cuda|vaapi} or override DOCKER_BUILD as needed.\n'
+	@printf '\nUse FFMPEG_FLAVOR={default|rpi|cuda|vaapi}, COMBO=<channel/flavor>, or override DOCKER_BUILD as needed.\n'
 
 submodules-add:
 	./scripts/add-submodules.sh
@@ -80,6 +87,28 @@ check-submodules:
 	@for env_file in $(FFMPEG_ENV_FILES); do test -f "$$env_file" || { echo "Missing $$env_file"; exit 1; }; done
 	@test -f "$(CORE_DIR)/Dockerfile" || { echo "Missing $(CORE_DIR). Run ./scripts/add-submodules.sh first."; exit 1; }
 	@test -f "$(RESTREAMER_UI_DIR)/Dockerfile" || { echo "Missing $(RESTREAMER_UI_DIR). Run ./scripts/add-submodules.sh first."; exit 1; }
+
+$(COMBO_CATALOG): $(COMBO_CATALOG_SCRIPT) \
+		.github/workflows/build_bundle.yaml \
+		.github/workflows/build_bundle_dev.yaml \
+		Makefile \
+		third_party/core/app/version.go \
+		third_party/restreamer-ui/package.json \
+		third_party/ffmpeg/Build.alpine.env \
+		third_party/ffmpeg/Build.alpine.rpi.env \
+		third_party/ffmpeg/Build.ubuntu.env \
+		third_party/ffmpeg/Build.ubuntu.cuda.env \
+		third_party/ffmpeg/Build.ubuntu.vaapi.env
+	$(RUBY) $(COMBO_CATALOG_SCRIPT) generate $(COMBO_CATALOG)
+
+generate-combo-catalog: $(COMBO_CATALOG)
+
+list-combos: $(COMBO_CATALOG)
+	@$(RUBY) $(COMBO_CATALOG_SCRIPT) list $(COMBO_CATALOG)
+
+show-combo: $(COMBO_CATALOG)
+	@test -n "$(COMBO)" || { echo "Set COMBO=<channel/flavor>, for example COMBO=main/default"; exit 1; }
+	@$(RUBY) $(COMBO_CATALOG_SCRIPT) show "$(COMBO)" $(COMBO_CATALOG)
 
 # Source the same env files used by ffmpeg-arc workflows so package pins stay in sync with CI.
 build-ffmpeg: check-submodules

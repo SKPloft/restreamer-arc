@@ -20,6 +20,12 @@ RUBY ?= ruby
 COMBO_CATALOG_SCRIPT := scripts/generate_combo_catalog.rb
 COMBO_CATALOG := combinations/catalog.json
 
+# third_party/ffmpeg is pinned to the 8.0 branch, which keeps its versions in Build.sh and in the
+# base build workflows instead of separate env files.
+FFMPEG_VERSION ?= 8.0.1
+FFMPEG_BUILD_DATE ?= 1970-01-01T00:00:00Z
+FFMPEG_BUILD_COMMIT ?= unknown
+
 FFMPEG_FLAVOR ?= default
 FFMPEG_TAG ?= $(FFMPEG_FLAVOR)
 CORE_TAG ?= local
@@ -30,23 +36,36 @@ RUN_NAME ?= restreamer-arc
 CONFIG_DIR ?= $(CURDIR)/.local/config
 DATA_DIR ?= $(CURDIR)/.local/data
 
-# Map a logical ffmpeg flavor to the upstream Dockerfile naming used by ffmpeg-arc.
+# Map a logical ffmpeg flavor to the Dockerfile naming and base images used by ffmpeg-arc.
 ifeq ($(FFMPEG_FLAVOR),default)
 FFMPEG_DOCKERFILE := Dockerfile.alpine
-FFMPEG_ENV_FILES := $(FFMPEG_DIR)/Build.alpine.env
-CORE_BUILD_IMAGE := alpine:3.20
+FFMPEG_OS_NAME := alpine
+FFMPEG_OS_VERSION := 3.23
+FFMPEG_BUILD_IMAGE := alpine:3.23
+FFMPEG_EXTRA_ARGS :=
+CORE_BUILD_IMAGE := alpine:3.23
 else ifeq ($(FFMPEG_FLAVOR),rpi)
 FFMPEG_DOCKERFILE := Dockerfile.alpine.rpi
-FFMPEG_ENV_FILES := $(FFMPEG_DIR)/Build.alpine.env $(FFMPEG_DIR)/Build.alpine.rpi.env
-CORE_BUILD_IMAGE := alpine:3.20
-else ifeq ($(FFMPEG_FLAVOR),cuda)
-FFMPEG_DOCKERFILE := Dockerfile.ubuntu.cuda
-FFMPEG_ENV_FILES := $(FFMPEG_DIR)/Build.ubuntu.env $(FFMPEG_DIR)/Build.ubuntu.cuda.env
-CORE_BUILD_IMAGE := ubuntu:22.04
+FFMPEG_OS_NAME := alpine
+FFMPEG_OS_VERSION := 3.23
+FFMPEG_BUILD_IMAGE := alpine:3.23
+FFMPEG_EXTRA_ARGS :=
+CORE_BUILD_IMAGE := alpine:3.23
 else ifeq ($(FFMPEG_FLAVOR),vaapi)
 FFMPEG_DOCKERFILE := Dockerfile.ubuntu.vaapi
-FFMPEG_ENV_FILES := $(FFMPEG_DIR)/Build.ubuntu.env $(FFMPEG_DIR)/Build.ubuntu.vaapi.env
-CORE_BUILD_IMAGE := ubuntu:22.04
+FFMPEG_OS_NAME := ubuntu
+FFMPEG_OS_VERSION := 24.04
+FFMPEG_BUILD_IMAGE := ubuntu:24.04
+FFMPEG_EXTRA_ARGS := --build-arg "DEPLOY_IMAGE=ubuntu:24.04"
+CORE_BUILD_IMAGE := ubuntu:24.04
+else ifeq ($(FFMPEG_FLAVOR),cuda)
+FFMPEG_DOCKERFILE := Dockerfile.ubuntu.cuda13
+FFMPEG_OS_NAME := ubuntu
+FFMPEG_OS_VERSION := 24.04
+FFMPEG_CUDA_VERSION := 13.1.0
+FFMPEG_BUILD_IMAGE := nvidia/cuda:13.1.0-devel-ubuntu24.04
+FFMPEG_EXTRA_ARGS := --build-arg "DEPLOY_IMAGE=nvidia/cuda:13.1.0-runtime-ubuntu24.04" --build-arg "FFNVCODEC_VERSION=13.0.19.0"
+CORE_BUILD_IMAGE := ubuntu:24.04
 else
 $(error Unsupported FFMPEG_FLAVOR '$(FFMPEG_FLAVOR)'; use default, rpi, cuda, or vaapi)
 endif
@@ -82,9 +101,7 @@ submodules-update:
 
 # Fail early with a clear message instead of letting docker build complain about missing contexts.
 check-submodules:
-	@test -f "$(FFMPEG_DIR)/$(FFMPEG_DOCKERFILE)" || { echo "Missing $(FFMPEG_DIR). Run ./scripts/add-submodules.sh first."; exit 1; }
-	@test -n "$(FFMPEG_ENV_FILES)" || { echo "Missing ffmpeg workflow env file mapping for $(FFMPEG_FLAVOR)."; exit 1; }
-	@for env_file in $(FFMPEG_ENV_FILES); do test -f "$$env_file" || { echo "Missing $$env_file"; exit 1; }; done
+	@test -f "$(FFMPEG_DIR)/$(FFMPEG_DOCKERFILE)" || { echo "Missing $(FFMPEG_DIR)/$(FFMPEG_DOCKERFILE). Run ./scripts/add-submodules.sh first."; exit 1; }
 	@test -f "$(CORE_DIR)/Dockerfile" || { echo "Missing $(CORE_DIR). Run ./scripts/add-submodules.sh first."; exit 1; }
 	@test -f "$(RESTREAMER_UI_DIR)/Dockerfile" || { echo "Missing $(RESTREAMER_UI_DIR). Run ./scripts/add-submodules.sh first."; exit 1; }
 
@@ -94,11 +111,7 @@ $(COMBO_CATALOG): $(COMBO_CATALOG_SCRIPT) \
 		Makefile \
 		third_party/core/app/version.go \
 		third_party/restreamer-ui/package.json \
-		third_party/ffmpeg/Build.alpine.env \
-		third_party/ffmpeg/Build.alpine.rpi.env \
-		third_party/ffmpeg/Build.ubuntu.env \
-		third_party/ffmpeg/Build.ubuntu.cuda.env \
-		third_party/ffmpeg/Build.ubuntu.vaapi.env
+		third_party/ffmpeg/Build.sh
 	$(RUBY) $(COMBO_CATALOG_SCRIPT) generate $(COMBO_CATALOG)
 
 generate-combo-catalog: $(COMBO_CATALOG)
@@ -110,48 +123,17 @@ show-combo: $(COMBO_CATALOG)
 	@test -n "$(COMBO)" || { echo "Set COMBO=<channel/flavor>, for example COMBO=main/default"; exit 1; }
 	@$(RUBY) $(COMBO_CATALOG_SCRIPT) show "$(COMBO)" $(COMBO_CATALOG)
 
-# Source the same env files used by ffmpeg-arc workflows so package pins stay in sync with CI.
+# The flavor mapping above carries the same versions and base images that ffmpeg-arc passes in its workflows.
 build-ffmpeg: check-submodules
-	@set -a; \
-	for env_file in $(FFMPEG_ENV_FILES); do . "$$env_file"; done; \
-	set +a; \
-	case "$(FFMPEG_FLAVOR)" in \
-		default) \
-			build_image="$${OS_NAME}:$${OS_VERSION}"; \
-			extra_args=(--build-arg "ALSA_VERSION=$${ALSA_VERSION}"); \
-			;; \
-		rpi) \
-			build_image="$${OS_NAME}:$${OS_VERSION}"; \
-			extra_args=(--build-arg "ALSA_VERSION=$${ALSA_VERSION}" --build-arg "RPI_VERSION=$${RPI_VERSION}"); \
-			;; \
-		cuda) \
-			build_image="nvidia/cuda:$${CUDA_VERSION}-devel-$${OS_NAME}$${OS_VERSION}"; \
-			extra_args=( \
-				--build-arg "DEPLOY_IMAGE=nvidia/cuda:$${CUDA_VERSION}-runtime-$${OS_NAME}$${OS_VERSION}" \
-				--build-arg "FFNVCODEC_VERSION=$${FFNVCODEC_VERSION}" \
-				--build-arg "OGG_VERSION=$${OGG_VERSION}" \
-			); \
-			;; \
-		vaapi) \
-			build_image="$${OS_NAME}:$${OS_VERSION}"; \
-			extra_args=(--build-arg "DEPLOY_IMAGE=$${OS_NAME}:$${OS_VERSION}"); \
-			;; \
-	esac; \
-	build_args=( \
-		--build-arg "BUILD_IMAGE=$$build_image" \
-		--build-arg "FREETYPE_VERSION=$${FREETYPE_VERSION}" \
-		--build-arg "XML2_VERSION=$${XML2_VERSION}" \
-		--build-arg "SRT_VERSION=$${SRT_VERSION}" \
-		--build-arg "X264_VERSION=$${X264_VERSION}" \
-		--build-arg "X265_VERSION=$${X265_VERSION}" \
-		--build-arg "VPX_VERSION=$${VPX_VERSION}" \
-		--build-arg "LAME_VERSION=$${LAME_VERSION}" \
-		--build-arg "OPUS_VERSION=$${OPUS_VERSION}" \
-		--build-arg "VORBIS_VERSION=$${VORBIS_VERSION}" \
-		--build-arg "FFMPEG_VERSION=$${FFMPEG_VERSION}" \
-	); \
-	build_args+=("$${extra_args[@]}"); \
-	$(DOCKER_BUILD) -f "$(FFMPEG_DIR)/$(FFMPEG_DOCKERFILE)" "$${build_args[@]}" -t "$(FFMPEG_IMAGE):$(FFMPEG_TAG)" "$(FFMPEG_DIR)"
+	$(DOCKER_BUILD) \
+		-f "$(FFMPEG_DIR)/$(FFMPEG_DOCKERFILE)" \
+		--build-arg "BUILD_IMAGE=$(FFMPEG_BUILD_IMAGE)" \
+		--build-arg "BUILD_DATE=$(FFMPEG_BUILD_DATE)" \
+		--build-arg "BUILD_COMMIT=$(FFMPEG_BUILD_COMMIT)" \
+		--build-arg "FFMPEG_VERSION=$(FFMPEG_VERSION)" \
+		$(FFMPEG_EXTRA_ARGS) \
+		-t "$(FFMPEG_IMAGE):$(FFMPEG_TAG)" \
+		"$(FFMPEG_DIR)"
 
 # Keep core aligned with the base-image matrix used in core/.github/workflows/build_base.yaml.
 build-core: check-submodules
@@ -187,10 +169,12 @@ build-vaapi:
 	$(MAKE) build FFMPEG_FLAVOR=vaapi
 
 # Keep runtime state under the repo by default so local smoke tests are easy to clean up.
-run:
+# The DRM device is required for the hardware AV1 coders (av1_vaapi, av1_qsv).
+run: check-submodules
 	mkdir -p "$(CONFIG_DIR)" "$(DATA_DIR)"
 	$(DOCKER) run --rm -it \
 		--name "$(RUN_NAME)" \
+		--device /dev/dri:/dev/dri \
 		-v "$(CONFIG_DIR):/core/config" \
 		-v "$(DATA_DIR):/core/data" \
 		-p 8080:8080 \

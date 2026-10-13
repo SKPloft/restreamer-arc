@@ -25,7 +25,6 @@ class ComboCatalog
     @makefile_mapping = parse_makefile_mapping
     @local_ui = parse_local_ui
     @local_core_version = parse_local_core_version
-    @env_cache = {}
   end
 
   def generate
@@ -91,10 +90,7 @@ class ComboCatalog
     puts "  core: #{local_workspace.fetch("core").fetch("version")}"
     puts "  ffmpeg: #{ffmpeg_summary(local_ffmpeg)}"
     puts "  ffmpeg_dockerfile: #{local_ffmpeg.fetch("dockerfile")}"
-    puts "  ffmpeg_env_files:"
-    local_ffmpeg.fetch("env_files").each do |env_file|
-      puts "    - #{env_file}"
-    end
+    puts "  ffmpeg_build_image: #{local_ffmpeg.fetch("build_image")}"
     print_markers("drift_markers", entry.fetch("drift_markers"))
     print_markers("manual_review_markers", entry.fetch("manual_review_markers"))
   end
@@ -174,9 +170,6 @@ class ComboCatalog
 
   def build_local_workspace(flavor)
     mapping = @makefile_mapping.fetch(flavor)
-    env = mapping.fetch("env_files").each_with_object({}) do |env_file, merged|
-      merged.merge!(parse_env_file(env_file))
-    end
 
     {
       "ffmpeg_flavor" => flavor,
@@ -185,12 +178,12 @@ class ComboCatalog
         "version" => @local_core_version
       },
       "ffmpeg" => {
-        "version" => env.fetch("FFMPEG_VERSION"),
-        "os_name" => env.fetch("OS_NAME"),
-        "os_version" => env.fetch("OS_VERSION"),
-        "cuda_version" => env["CUDA_VERSION"],
+        "version" => @makefile_mapping.fetch("ffmpeg_version"),
+        "os_name" => mapping.fetch("os_name"),
+        "os_version" => mapping.fetch("os_version"),
+        "cuda_version" => mapping["cuda_version"],
         "dockerfile" => mapping.fetch("dockerfile"),
-        "env_files" => mapping.fetch("env_files")
+        "build_image" => mapping.fetch("build_image")
       },
       "makefile" => {
         "core_build_image" => mapping.fetch("core_build_image"),
@@ -249,16 +242,16 @@ class ComboCatalog
     local_base = "#{local_ffmpeg.fetch("os_name")}#{local_ffmpeg.fetch("os_version")}"
 
     if metadata.fetch("version") != local_ffmpeg.fetch("version")
-      drift_markers << "FFmpeg drift: upstream uses #{metadata.fetch("version")} while the local env files pin #{local_ffmpeg.fetch("version")}."
+      drift_markers << "FFmpeg drift: upstream uses #{metadata.fetch("version")} while the local Makefile pins #{local_ffmpeg.fetch("version")}."
     end
 
     if metadata.fetch("os_name") != local_ffmpeg.fetch("os_name") || metadata.fetch("os_version") != local_ffmpeg.fetch("os_version")
-      drift_markers << "FFmpeg base drift: upstream uses #{metadata.fetch("os_name")}#{metadata.fetch("os_version")} while the local env files pin #{local_base}."
+      drift_markers << "FFmpeg base drift: upstream uses #{metadata.fetch("os_name")}#{metadata.fetch("os_version")} while the local Makefile pins #{local_base}."
     end
 
     return if metadata.fetch("cuda_version") == local_ffmpeg["cuda_version"]
 
-    drift_markers << "CUDA toolchain drift: upstream uses #{metadata.fetch("cuda_version") || "no CUDA suffix"} while the local env files pin #{local_ffmpeg["cuda_version"] || "no CUDA suffix"}."
+    drift_markers << "CUDA toolchain drift: upstream uses #{metadata.fetch("cuda_version") || "no CUDA suffix"} while the local Makefile pins #{local_ffmpeg["cuda_version"] || "no CUDA suffix"}."
   end
 
   def parse_core_metadata(value)
@@ -325,22 +318,6 @@ class ComboCatalog
     parts.join(".")
   end
 
-  def parse_env_file(relative_file)
-    @env_cache[relative_file] ||= begin
-      data = {}
-      ROOT.join(relative_file).read.each_line do |line|
-        stripped = line.strip
-        next if stripped.empty? || stripped.start_with?("#")
-
-        key, value = stripped.split("=", 2)
-        next unless value
-
-        data[key] = value
-      end
-      data
-    end
-  end
-
   def parse_makefile_mapping
     mapping = {}
     current_flavor = nil
@@ -360,6 +337,11 @@ class ComboCatalog
 
       current_flavor = nil if line.match?(/^endif$/)
 
+      if (match = line.match(/^FFMPEG_VERSION\s*\?=\s*(.+)$/))
+        mapping["ffmpeg_version"] = match[1].strip
+        next
+      end
+
       if (match = line.match(/^CORE_GOLANG_IMAGE\s*:=\s*(.+)$/))
         mapping["core_golang_image"] = match[1].strip
         next
@@ -367,7 +349,7 @@ class ComboCatalog
 
       next unless current_flavor
 
-      if (match = line.match(/^(FFMPEG_DOCKERFILE|FFMPEG_ENV_FILES|CORE_BUILD_IMAGE)\s*:=\s*(.+)$/))
+      if (match = line.match(/^(FFMPEG_DOCKERFILE|FFMPEG_OS_NAME|FFMPEG_OS_VERSION|FFMPEG_CUDA_VERSION|FFMPEG_BUILD_IMAGE|CORE_BUILD_IMAGE)\s*:=\s*(.+)$/))
         key = match[1]
         value = match[2].strip
         apply_makefile_mapping(mapping[current_flavor], key, value)
@@ -376,7 +358,12 @@ class ComboCatalog
 
     FLAVOR_ORDER.each do |flavor|
       abort "Missing Makefile mapping for #{flavor}" unless mapping.key?(flavor)
+
+      %w[dockerfile os_name os_version build_image core_build_image].each do |key|
+        abort "Missing #{key} for flavor #{flavor} in Makefile" unless mapping.fetch(flavor).key?(key)
+      end
     end
+    abort "Missing FFMPEG_VERSION in Makefile" unless mapping.key?("ffmpeg_version")
     abort "Missing CORE_GOLANG_IMAGE in Makefile" unless mapping.key?("core_golang_image")
 
     mapping
@@ -386,10 +373,14 @@ class ComboCatalog
     case key
     when "FFMPEG_DOCKERFILE"
       flavor_mapping["dockerfile"] = "third_party/ffmpeg/#{value}"
-    when "FFMPEG_ENV_FILES"
-      flavor_mapping["env_files"] = value.split.map do |env_file|
-        env_file.gsub("$(FFMPEG_DIR)/", "third_party/ffmpeg/")
-      end
+    when "FFMPEG_OS_NAME"
+      flavor_mapping["os_name"] = value
+    when "FFMPEG_OS_VERSION"
+      flavor_mapping["os_version"] = value
+    when "FFMPEG_CUDA_VERSION"
+      flavor_mapping["cuda_version"] = value
+    when "FFMPEG_BUILD_IMAGE"
+      flavor_mapping["build_image"] = value
     when "CORE_BUILD_IMAGE"
       flavor_mapping["core_build_image"] = value
     end

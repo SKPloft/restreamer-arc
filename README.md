@@ -143,12 +143,55 @@ make build FFMPEG_FLAVOR=cuda
 make build FFMPEG_FLAVOR=vaapi
 ```
 
+Each flavor maps to one Dockerfile of the pinned ffmpeg branch and to the base image that
+ffmpeg-arc uses for it:
+
+| `FFMPEG_FLAVOR` | Dockerfile | Base image | Encoders |
+| --- | --- | --- | --- |
+| `default` | `Dockerfile.alpine` | `alpine:3.23` | software AV1 |
+| `rpi` | `Dockerfile.alpine.rpi` | `alpine:3.23` | software AV1 |
+| `vaapi` | `Dockerfile.ubuntu.vaapi` | `ubuntu:24.04` | Intel VA-API and oneVPL, including hardware AV1 |
+| `cuda` | `Dockerfile.ubuntu.cuda13` | `nvidia/cuda:13.1.0-devel-ubuntu24.04` | Nvidia CUDA/NVENC |
+
 By default this produces the following local image tags:
 
 - `restreamer-arc-ffmpeg:<flavor>`
 - `restreamer-arc-core:local`
 - `restreamer-arc-restreamer-ui:local`
 - `restreamer-arc:<flavor>`
+
+#### Hardware AV1 on Intel Arc
+
+The `vaapi` flavor builds FFmpeg with `--enable-vaapi` and `--enable-libvpl` and ships the
+VA-API driver, the oneVPL dispatcher and the oneVPL GPU runtime. The interface then offers
+two Intel hardware AV1 encoders:
+
+- `AV1 (Intel VAAPI)` encodes with `av1_vaapi` and takes the DRM render node as its `Device` setting.
+- `AV1 (Intel QSV)` encodes with `av1_qsv` over oneVPL and takes the same setting.
+
+Both settings default to `/dev/dri/renderD128`. On a machine with more than one graphics
+device, read the render node of the Intel card from `/dev/dri/by-path`:
+
+```sh
+ls -l /dev/dri/by-path
+```
+
+Build and start the bundle with the DRM device:
+
+```sh
+make build-vaapi
+make run FFMPEG_FLAVOR=vaapi
+```
+
+`make run` passes `--device /dev/dri:/dev/dri` to the container. The stream wizard and the
+stream encoding settings offer H.264 only, so choose the AV1 encoder in the encoding
+settings of a publication destination whose service declares AV1 support (RTMP, SRT,
+Youtube and the datarhei Core service do).
+The interface lists exactly those encoders that the running FFmpeg reports:
+
+```sh
+curl -s http://127.0.0.1:8080/api/v3/skills | jq '.codecs.video[] | select(.id == "av1")'
+```
 
 #### Upstream-supported combos vs local workspace
 
@@ -175,7 +218,7 @@ Combo IDs currently available:
 
 `make list-combos` prints the upstream combo ID, image tags, platforms, and a drift status. `make show-combo` prints the upstream tags plus the local `FFMPEG_FLAVOR` mapping, pinned UI/core/ffmpeg metadata, and any drift markers.
 
-Drift markers mean the local workspace does not currently match the selected upstream combo. Typical drift in this fork includes local ffmpeg env files still pinned to `5.1.3` on Alpine `3.16` or Ubuntu `20.04`, while upstream bundle workflows now reference ffmpeg `6.1.1` or `7.1.1` on newer base images. `manual_review` markers mean the upstream workflow resolves a version dynamically, so the local workspace should be compared manually instead of being treated as equivalent.
+Drift markers mean the local workspace does not currently match the selected upstream combo. The local ffmpeg submodule is pinned to the `8.0` branch (`FFMPEG_VERSION` `8.0.1` on Alpine `3.23` and Ubuntu `24.04`), while the upstream bundle workflows reference ffmpeg `6.1.1` for `main` and `8.1.1` for `dev`. `manual_review` markers mean the upstream workflow resolves a version dynamically, so the local workspace should be compared manually instead of being treated as equivalent.
 
 To refresh the generated catalog after updating workflow matrices or local pins:
 
@@ -201,7 +244,7 @@ make build DOCKER_BUILD='docker buildx build --load'
 ```
 $ git clone https://github.com/SKPloft/ffmpeg-arc
 $ cd ffmpeg-arc
-$ docker build -f Dockerfile.alpine -t myffmpeg .
+$ docker build -f Dockerfile.alpine --build-arg FFMPEG_VERSION=8.0.1 -t myffmpeg .
 ```
 
 #### [Restreamer backend](https://github.com/SKPloft/core-arc) (Golang):

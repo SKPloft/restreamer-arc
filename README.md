@@ -238,6 +238,60 @@ If you need `buildx`, override `DOCKER_BUILD`, for example:
 make build DOCKER_BUILD='docker buildx build --load'
 ```
 
+### Bundle release: pinned sources and preview player rollout
+
+The bundle is released from the three gitlinks in `third_party`. The audit behind the current
+preview player fix lives in the UI repository at
+[`docs/av1-preview-audit.md`](https://forgejo.vtopia.top/SKPloft/restreamer-ui-arc/src/branch/main/docs/av1-preview-audit.md).
+
+Check the pins before building and confirm that every pinned commit is reachable from the
+GitHub remotes named in `.gitmodules`:
+
+```sh
+git submodule status
+git -C third_party/core branch -r --contains HEAD
+git -C third_party/restreamer-ui branch -r --contains HEAD
+```
+
+`CORE_GOLANG_IMAGE` follows the release matrix in
+`third_party/core/.github/workflows/build_base.yaml`. The `ARG GOLANG_IMAGE` default inside
+`third_party/core/Dockerfile` is overridden by `make build-core`, so only the workflow matrix
+matters when the core pin moves.
+
+After the new UI reaches a running instance:
+
+1. Refresh the UI build in place (`rsync --delete` into the mounted directory) and keep the
+   previous build as the rollback baseline.
+2. Re-save the **Publication → Player** page of every channel
+   (`/#/<channelid>/publication/player`). Save rewrites the channel metadata and the player
+   config, re-renders `/<channelid>.html` and re-uploads the assets from `_player/videojs`
+   (`hls.min.js`, `videojs-hlsjs.js`); the ingest control block stays as it is, so the running
+   encoder is not restarted.
+3. Re-save the playersite (`/#/playersite`) so its player assets are regenerated as well.
+4. Hard-reload the SPA and one published page, and confirm the served `hls.min.js` and
+   `videojs-hlsjs.js` are the new builds.
+
+Do not re-save Source/Edit pages in bulk: that path runs `UpsertIngest` and restarts the live
+stream. Rebuild a channel in Source/Edit only when it was previously saved with MPEG-TS
+segments for a non-H.264 `copy` source; verify the new composition in an isolated staging
+instance with a probe first and schedule a maintenance window. H.264 channels and channels that
+already encode AV1 natively need no rebuild.
+
+Rollback does not follow from a successful new core. The order is: establish the compatible
+`core` and `ffmigrate` pair as the tested baseline first, both binaries from the same commit and
+cold-started against the real database, and release the UI only after that baseline exists.
+
+- UI rollback restores the previous UI assets and keeps the compatible backend running.
+- Backend rollback needs a separate compatible image, or an image that carries both a working
+  `core` and a working `ffmigrate`, verified to cold-start against the database it will face.
+  Reverting this repository to the previous bundle commit restores an `ffmigrate` that rejects
+  FFmpeg 8, so it is not a rollback path.
+- When no such backend baseline exists, keep the running instance, isolate the candidate, and
+  let the deployment issue for that host (`SKPLoft/devops#40`) define the plan. A new core that
+  cold-starts says nothing about the previous bundle.
+
+Never delete database records to make a migration pass.
+
 ### Manual image assembly (still supported)
 
 #### [Restreamer FFmpeg](https://github.com/SKPloft/ffmpeg-arc):

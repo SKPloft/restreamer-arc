@@ -158,7 +158,7 @@ build-ffmpeg: check-submodules
 		-t "$(FFMPEG_IMAGE):$(FFMPEG_TAG)" \
 		"$(FFMPEG_BUILD_CONTEXT)"
 
-# Keep core aligned with the base-image matrix used in core/.github/workflows/build_base.yaml.
+# Keep core aligned with the base-image matrix used in core/.github/workflows/build_base_dev.yaml.
 build-core: check-submodules
 	$(DOCKER_BUILD) \
 		-f "$(CORE_BUILD_CONTEXT)/Dockerfile" \

@@ -86,8 +86,9 @@ else
 $(error Unsupported FFMPEG_FLAVOR '$(FFMPEG_FLAVOR)'; use default, rpi, cuda, or vaapi)
 endif
 
-# Mirror the main-branch core workflow defaults for local builds.
-CORE_GOLANG_IMAGE := golang:1.23-alpine3.20
+# Mirror the dev-line core workflow defaults for local builds. The module only requires go 1.25,
+# while the dev matrix builds with 1.27, so the image has to keep up with that matrix.
+CORE_GOLANG_IMAGE := golang:1.27-alpine3.23
 
 .PHONY: help submodules-add submodules-update check-submodules \
 	build-ffmpeg build-core build-ui build \

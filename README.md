@@ -286,13 +286,14 @@ set of components:
 | --- | --- | --- | --- |
 | upstream `main/*` (`datarhei/restreamer:<flavor>`) | 6.1.1 | core main | UI release |
 | upstream `dev/*` (`datarhei/restreamer:<flavor>-dev`) | 8.1.1 | core `dev` | UI `dev` |
-| this fork `2.x` (`make release`) | 8.0.1 plus this fork's `contrib/*.patch` | core-arc main | restreamer-ui-arc main |
+| this fork `2.x` (`make release`) | 8.0.1 plus this fork's `contrib/*.patch` | core-arc `dev` | restreamer-ui-arc main |
 
-The `dev` channel ships newer components than the `2.x` pins, so a candidate built here can be a
-downgrade on a target that already runs `*-dev`. Establish the baseline on the target before
-deploying: the image digest and tag in use, the FFmpeg banner of the binary the core actually
-runs, the core and UI versions, and a cold start against the real database. Compare that baseline
-with the candidate's manifest and deploy only when no component is older than the baseline.
+The `2.x` pins sit on the `dev` core line but on FFmpeg 8.0 and the UI `main` line, so a candidate
+built here can still be older than a target that runs the upstream `*-dev` images (FFmpeg 8.1.1).
+Establish the baseline on the target before deploying: the image digest and tag in use, the FFmpeg
+banner of the binary the core actually runs, the core and UI versions, and a cold start against the
+real database. Compare that baseline with the candidate's manifest and deploy only when no
+component is older than the baseline.
 
 Drift markers mean the local workspace does not currently match the selected upstream combo. The local ffmpeg submodule is pinned to the `8.0` branch (`FFMPEG_VERSION` `8.0.1` on Alpine `3.23` and Ubuntu `24.04`), while the upstream bundle workflows reference ffmpeg `6.1.1` for `main` and `8.1.1` for `dev`. `manual_review` markers mean the upstream workflow resolves a version dynamically, so the local workspace should be compared manually instead of being treated as equivalent.
 
@@ -329,10 +330,19 @@ git -C third_party/core branch -r --contains HEAD
 git -C third_party/restreamer-ui branch -r --contains HEAD
 ```
 
-`CORE_GOLANG_IMAGE` follows the release matrix in
-`third_party/core/.github/workflows/build_base.yaml`. The `ARG GOLANG_IMAGE` default inside
-`third_party/core/Dockerfile` is overridden by `make build-core`, so only the workflow matrix
-matters when the core pin moves.
+`CORE_GOLANG_IMAGE` follows the dev-line release matrix in
+`third_party/core/.github/workflows/build_base_dev.yaml` (`golang:1.27-alpine3.23`). The
+`ARG GOLANG_IMAGE` default inside `third_party/core/Dockerfile` is overridden by `make build-core`,
+so only the workflow matrix matters when the core pin moves. The module itself only declares
+`go 1.25.0`; the 1.27 builder is what reproduces the production image, and the compiler patch
+level of that tag is allowed to move.
+
+`third_party/core` is pinned to the fork's `dev` line because the production bundle runs the
+upstream `datarhei/core` dev line: the pin commit is that line plus the FFmpeg 8 stats parsing and
+HLS session fixes, with `go.mod`, `go.sum`, the vendor tree and the API schema untouched. The UI
+stays on the `main` line and FFmpeg stays on `8.0`. `.gitmodules` declares `branch = dev` for that
+submodule so a release build checks the commit out on a local branch named `dev`; without the
+declaration the release build keeps the context detached.
 
 After the new UI reaches a running instance:
 

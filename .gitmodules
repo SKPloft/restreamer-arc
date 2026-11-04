@@ -4,6 +4,7 @@
 [submodule "third_party/core"]
 	path = third_party/core
 	url = https://github.com/SKPloft/core-arc.git
+	branch = dev
 [submodule "third_party/restreamer-ui"]
 	path = third_party/restreamer-ui
 	url = https://github.com/SKPloft/restreamer-ui-arc.git

@@ -160,6 +160,67 @@ By default this produces the following local image tags:
 - `restreamer-arc-restreamer-ui:local`
 - `restreamer-arc:<flavor>`
 
+Those tags are mutable and meant for local iteration. A release build goes through one entrypoint
+that proves the sources first:
+
+```sh
+make release FFMPEG_FLAVOR=vaapi
+```
+
+It refuses to build when any of these holds:
+
+- a submodule `HEAD` is not the gitlink the superproject commits for that path,
+- the superproject or a submodule has changes to tracked files,
+- a pinned component commit is not on any remote branch of that component,
+- a component image that is about to be assembled was built from another revision, i.e. its
+  `org.opencontainers.image.revision` label differs from the pin.
+
+Release images are tagged by the commits they were built from, so they never replace the tags a
+running deployment falls back to:
+
+| image | release tag |
+| --- | --- |
+| `restreamer-arc-ffmpeg` | `<flavor>-ff<ffmpeg sha12>` |
+| `restreamer-arc-core` | `<flavor>-core<core sha12>` |
+| `restreamer-arc-restreamer-ui` | `ui<ui sha12>` |
+| `restreamer-arc` | `<flavor>-ui<ui sha12>-core<core sha12>-ff<ffmpeg sha12>-r<root sha12>` |
+
+The core tag carries the flavor because its base image differs per flavor; the UI image is the
+same for every flavor. The bundle tag carries the root commit as well: the root `Dockerfile`,
+`run.sh` and `ui-root` change the product without changing any component commit, so a tag built
+from component SHAs alone would be reused for different contents.
+
+Every image carries `org.opencontainers.image.revision` (the full component commit) and
+`org.opencontainers.image.source` (the component fork clone URL); the bundle adds
+`io.skploft.restreamer.components` with the three commits. FFmpeg's `--extra-version` records the
+pinned commit and its commit date instead of `unknown` and the 1970 epoch.
+
+In a release build the FFmpeg stamp is read from the verified commit and passed on the make
+command line, so an exported `FFMPEG_BUILD_COMMIT`/`FFMPEG_BUILD_DATE` cannot label the image with
+another source. `make build` keeps the overridable defaults for local iteration.
+
+Docker reads every build context from a temporary directory materialised from the verified
+commit: `git archive` for the root repository, ffmpeg and the UI, and a local clone checked out at
+the pinned commit for core, whose Makefile stamps `app.Commit` only when `.git` is a directory.
+Untracked files, ignored files and a private `.env` in the working copies therefore cannot reach a
+release image, and the temporary contexts are removed when the build finishes.
+
+The build writes `releases/restreamer-arc-<flavor>-<root sha12>.json` (a numeric suffix is added
+when that file already exists) and prints the path. The manifest holds the root and component
+commits, the flavor matrix inputs that were used (ffmpeg Dockerfile, base images, `BUILD_COMMIT`,
+`BUILD_DATE`, Go and Node/Caddy images and their local image IDs), each image's platform, local `image_id` and
+`registry_digests`, and the bundle labels. `image_id` is the local image config digest;
+`registry_digests` stays empty until the image is pushed, and the two are never interchangeable.
+
+The manifest describes the image only. A host can still replace what actually runs: a bind mount
+over `/core/ui` and `CORE_FFMPEG_BINARY` in the core config decide the served interface and the
+FFmpeg binary independently of the image contents. `GET /api/v3/skills` is the authoritative
+answer for that binary: core reports the version it detected, so a different `ffmpeg` on `PATH`
+does not mislead the check. Verification on the target therefore records the sha256 of the served
+`main.<hash>.js`, the path and sha256 of the binary the core really executes, and the core commit,
+next to the manifest. The deployment issue for that host (`SKPLoft/devops#40`) carries those
+values.
+
 #### Hardware AV1 on Intel Arc
 
 The `vaapi` flavor builds FFmpeg with `--enable-vaapi` and `--enable-libvpl` and ships the
@@ -218,6 +279,21 @@ Combo IDs currently available:
 
 `make list-combos` prints the upstream combo ID, image tags, platforms, and a drift status. `make show-combo` prints the upstream tags plus the local `FFMPEG_FLAVOR` mapping, pinned UI/core/ffmpeg metadata, and any drift markers.
 
+The catalog compares upstream workflows with the local pins. What this repository ships is a third
+set of components:
+
+| source | ffmpeg | core | ui |
+| --- | --- | --- | --- |
+| upstream `main/*` (`datarhei/restreamer:<flavor>`) | 6.1.1 | core main | UI release |
+| upstream `dev/*` (`datarhei/restreamer:<flavor>-dev`) | 8.1.1 | core `dev` | UI `dev` |
+| this fork `2.x` (`make release`) | 8.0.1 plus this fork's `contrib/*.patch` | core-arc main | restreamer-ui-arc main |
+
+The `dev` channel ships newer components than the `2.x` pins, so a candidate built here can be a
+downgrade on a target that already runs `*-dev`. Establish the baseline on the target before
+deploying: the image digest and tag in use, the FFmpeg banner of the binary the core actually
+runs, the core and UI versions, and a cold start against the real database. Compare that baseline
+with the candidate's manifest and deploy only when no component is older than the baseline.
+
 Drift markers mean the local workspace does not currently match the selected upstream combo. The local ffmpeg submodule is pinned to the `8.0` branch (`FFMPEG_VERSION` `8.0.1` on Alpine `3.23` and Ubuntu `24.04`), while the upstream bundle workflows reference ffmpeg `6.1.1` for `main` and `8.1.1` for `dev`. `manual_review` markers mean the upstream workflow resolves a version dynamically, so the local workspace should be compared manually instead of being treated as equivalent.
 
 To refresh the generated catalog after updating workflow matrices or local pins:
@@ -244,8 +320,8 @@ The bundle is released from the three gitlinks in `third_party`. The audit behin
 preview player fix lives in the UI repository at
 [`docs/av1-preview-audit.md`](https://forgejo.vtopia.top/SKPloft/restreamer-ui-arc/src/branch/main/docs/av1-preview-audit.md).
 
-Check the pins before building and confirm that every pinned commit is reachable from the
-GitHub remotes named in `.gitmodules`:
+`make release` performs these checks itself. To inspect them by hand, confirm that every pinned
+commit is reachable from the remotes named in `.gitmodules`:
 
 ```sh
 git submodule status
@@ -323,6 +399,9 @@ $ cd restreamer-arc
 $ docker build --build-arg FFMPEG_IMAGE=myffmpeg --build-arg CORE_IMAGE=mycore --build-arg RESTREAMER_UI_IMAGE=myrsui -t myrestreamer .
 $ docker run -it --rm -p 8080:8080 myrestreamer
 ```
+
+All three `--build-arg` values are required. The root Dockerfile has no fallback, so a
+`docker build .` without them fails instead of silently assembling the upstream `latest` images.
 
 ### To add/fix translations in the [Restreamer interface](https://github.com/datarhei/restreamer-ui):
 

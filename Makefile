@@ -6,6 +6,14 @@ FFMPEG_DIR := $(SUBMODULE_ROOT)/ffmpeg
 CORE_DIR := $(SUBMODULE_ROOT)/core
 RESTREAMER_UI_DIR := $(SUBMODULE_ROOT)/restreamer-ui
 
+# Every image records the commit it was built from, so a mutable tag can never hide a stale or
+# foreign component. The helpers read the submodule working copies that `check-submodules` proves.
+GIT ?= git
+git_revision = $(shell $(GIT) -C $(1) rev-parse --verify HEAD 2>/dev/null)
+git_source = $(shell $(GIT) -C $(1) remote get-url origin 2>/dev/null)
+git_short = $(shell printf '%s' '$(1)' | cut -c1-12)
+oci_labels = --label "org.opencontainers.image.revision=$(1)" --label "org.opencontainers.image.source=$(2)"
+
 # DOCKER_BUILD can be overridden with "docker buildx build --load" when multi-platform tooling is needed.
 DOCKER ?= docker
 DOCKER_BUILD ?= $(DOCKER) build
@@ -23,8 +31,8 @@ COMBO_CATALOG := combinations/catalog.json
 # third_party/ffmpeg is pinned to the 8.0 branch, which keeps its versions in Build.sh and in the
 # base build workflows instead of separate env files.
 FFMPEG_VERSION ?= 8.0.1
-FFMPEG_BUILD_DATE ?= 1970-01-01T00:00:00Z
-FFMPEG_BUILD_COMMIT ?= unknown
+FFMPEG_BUILD_COMMIT ?= $(call git_revision,$(FFMPEG_DIR))
+FFMPEG_BUILD_DATE ?= $(shell $(GIT) -C $(FFMPEG_DIR) show -s --format=%cI HEAD 2>/dev/null)
 
 FFMPEG_FLAVOR ?= default
 FFMPEG_TAG ?= $(FFMPEG_FLAVOR)
@@ -32,9 +40,17 @@ CORE_TAG ?= local
 RESTREAMER_UI_TAG ?= local
 BUNDLE_TAG ?= $(FFMPEG_FLAVOR)
 
+# Docker build contexts default to the working copies. `make release` overrides them with git
+# archives of the verified commits so untracked and ignored files never enter a release image.
+FFMPEG_BUILD_CONTEXT ?= $(FFMPEG_DIR)
+CORE_BUILD_CONTEXT ?= $(CORE_DIR)
+RESTREAMER_UI_BUILD_CONTEXT ?= $(RESTREAMER_UI_DIR)
+ROOT_BUILD_CONTEXT ?= .
+
 RUN_NAME ?= restreamer-arc
 CONFIG_DIR ?= $(CURDIR)/.local/config
 DATA_DIR ?= $(CURDIR)/.local/data
+RELEASE_DIR ?= $(CURDIR)/releases
 
 # Map a logical ffmpeg flavor to the Dockerfile naming and base images used by ffmpeg-arc.
 ifeq ($(FFMPEG_FLAVOR),default)
@@ -77,12 +93,14 @@ CORE_GOLANG_IMAGE := golang:1.23-alpine3.20
 	build-ffmpeg build-core build-ui build \
 	build-default build-rpi build-cuda build-vaapi \
 	generate-combo-catalog list-combos show-combo \
+	check-component-images build-inputs release \
 	run print-images
 
 help:
 	@printf '%-18s %s\n' 'submodules-add' 'Add the three upstream forks as git submodules'
 	@printf '%-18s %s\n' 'submodules-update' 'Init or refresh existing git submodules'
 	@printf '%-18s %s\n' 'build' 'Build ffmpeg, core, restreamer-ui, then the bundle image'
+	@printf '%-18s %s\n' 'release' 'Build pinned release images with SHA tags and a manifest under releases/'
 	@printf '%-18s %s\n' 'build-default' 'Build the bundle with ffmpeg default flavor'
 	@printf '%-18s %s\n' 'build-rpi' 'Build the bundle with ffmpeg rpi flavor'
 	@printf '%-18s %s\n' 'build-cuda' 'Build the bundle with ffmpeg cuda flavor'
@@ -104,6 +122,9 @@ check-submodules:
 	@test -f "$(FFMPEG_DIR)/$(FFMPEG_DOCKERFILE)" || { echo "Missing $(FFMPEG_DIR)/$(FFMPEG_DOCKERFILE). Run ./scripts/add-submodules.sh first."; exit 1; }
 	@test -f "$(CORE_DIR)/Dockerfile" || { echo "Missing $(CORE_DIR). Run ./scripts/add-submodules.sh first."; exit 1; }
 	@test -f "$(RESTREAMER_UI_DIR)/Dockerfile" || { echo "Missing $(RESTREAMER_UI_DIR). Run ./scripts/add-submodules.sh first."; exit 1; }
+	@$(GIT) -C "$(FFMPEG_DIR)" rev-parse --verify HEAD >/dev/null 2>&1 || { echo "$(FFMPEG_DIR) is not a git checkout. Run git submodule update --init --recursive."; exit 1; }
+	@$(GIT) -C "$(CORE_DIR)" rev-parse --verify HEAD >/dev/null 2>&1 || { echo "$(CORE_DIR) is not a git checkout. Run git submodule update --init --recursive."; exit 1; }
+	@$(GIT) -C "$(RESTREAMER_UI_DIR)" rev-parse --verify HEAD >/dev/null 2>&1 || { echo "$(RESTREAMER_UI_DIR) is not a git checkout. Run git submodule update --init --recursive."; exit 1; }
 
 $(COMBO_CATALOG): $(COMBO_CATALOG_SCRIPT) \
 		.github/workflows/build_bundle.yaml \
@@ -126,35 +147,64 @@ show-combo: $(COMBO_CATALOG)
 # The flavor mapping above carries the same versions and base images that ffmpeg-arc passes in its workflows.
 build-ffmpeg: check-submodules
 	$(DOCKER_BUILD) \
-		-f "$(FFMPEG_DIR)/$(FFMPEG_DOCKERFILE)" \
+		-f "$(FFMPEG_BUILD_CONTEXT)/$(FFMPEG_DOCKERFILE)" \
 		--build-arg "BUILD_IMAGE=$(FFMPEG_BUILD_IMAGE)" \
 		--build-arg "BUILD_DATE=$(FFMPEG_BUILD_DATE)" \
 		--build-arg "BUILD_COMMIT=$(FFMPEG_BUILD_COMMIT)" \
 		--build-arg "FFMPEG_VERSION=$(FFMPEG_VERSION)" \
 		$(FFMPEG_EXTRA_ARGS) \
+		$(call oci_labels,$(call git_revision,$(FFMPEG_DIR)),$(call git_source,$(FFMPEG_DIR))) \
 		-t "$(FFMPEG_IMAGE):$(FFMPEG_TAG)" \
-		"$(FFMPEG_DIR)"
+		"$(FFMPEG_BUILD_CONTEXT)"
 
 # Keep core aligned with the base-image matrix used in core/.github/workflows/build_base.yaml.
 build-core: check-submodules
 	$(DOCKER_BUILD) \
-		-f "$(CORE_DIR)/Dockerfile" \
+		-f "$(CORE_BUILD_CONTEXT)/Dockerfile" \
 		--build-arg BUILD_IMAGE="$(CORE_BUILD_IMAGE)" \
 		--build-arg GOLANG_IMAGE="$(CORE_GOLANG_IMAGE)" \
+		$(call oci_labels,$(call git_revision,$(CORE_DIR)),$(call git_source,$(CORE_DIR))) \
 		-t "$(CORE_IMAGE):$(CORE_TAG)" \
-		"$(CORE_DIR)"
+		"$(CORE_BUILD_CONTEXT)"
 
 build-ui: check-submodules
-	$(DOCKER_BUILD) -f "$(RESTREAMER_UI_DIR)/Dockerfile" -t "$(RESTREAMER_UI_IMAGE):$(RESTREAMER_UI_TAG)" "$(RESTREAMER_UI_DIR)"
+	$(DOCKER_BUILD) \
+		-f "$(RESTREAMER_UI_BUILD_CONTEXT)/Dockerfile" \
+		$(call oci_labels,$(call git_revision,$(RESTREAMER_UI_DIR)),$(call git_source,$(RESTREAMER_UI_DIR))) \
+		-t "$(RESTREAMER_UI_IMAGE):$(RESTREAMER_UI_TAG)" \
+		"$(RESTREAMER_UI_BUILD_CONTEXT)"
+
+# Refuse to assemble a bundle from component images that were built from another revision.
+check-component-images: check-submodules
+	@DOCKER="$(DOCKER)" ./scripts/verify-component-images.sh \
+		"$(FFMPEG_IMAGE):$(FFMPEG_TAG)" "$(call git_revision,$(FFMPEG_DIR))" \
+		"$(CORE_IMAGE):$(CORE_TAG)" "$(call git_revision,$(CORE_DIR))" \
+		"$(RESTREAMER_UI_IMAGE):$(RESTREAMER_UI_TAG)" "$(call git_revision,$(RESTREAMER_UI_DIR))"
+
+# The build inputs that the flavor matrix resolves, one KEY=VALUE per line. `make release` writes
+# them into the manifest so the base images are recorded next to the commits.
+build-inputs: check-submodules
+	@printf 'FFMPEG_DOCKERFILE=%s\n' "$(FFMPEG_DOCKERFILE)"
+	@printf 'FFMPEG_BUILD_IMAGE=%s\n' "$(FFMPEG_BUILD_IMAGE)"
+	@printf 'FFMPEG_EXTRA_ARGS=%s\n' "$(FFMPEG_EXTRA_ARGS)"
+	@printf 'FFMPEG_BUILD_COMMIT=%s\n' "$(FFMPEG_BUILD_COMMIT)"
+	@printf 'FFMPEG_BUILD_DATE=%s\n' "$(FFMPEG_BUILD_DATE)"
+	@printf 'FFMPEG_VERSION=%s\n' "$(FFMPEG_VERSION)"
+	@printf 'CORE_BUILD_IMAGE=%s\n' "$(CORE_BUILD_IMAGE)"
+	@printf 'CORE_GOLANG_IMAGE=%s\n' "$(CORE_GOLANG_IMAGE)"
 
 # The final bundle still assembles from three images so the root Dockerfile stays thin and predictable.
 build: build-ffmpeg build-core build-ui
+	@$(MAKE) --no-print-directory check-component-images
 	$(DOCKER_BUILD) \
+		-f "$(ROOT_BUILD_CONTEXT)/Dockerfile" \
 		--build-arg FFMPEG_IMAGE="$(FFMPEG_IMAGE):$(FFMPEG_TAG)" \
 		--build-arg CORE_IMAGE="$(CORE_IMAGE):$(CORE_TAG)" \
 		--build-arg RESTREAMER_UI_IMAGE="$(RESTREAMER_UI_IMAGE):$(RESTREAMER_UI_TAG)" \
+		$(call oci_labels,$(call git_revision,.),$(call git_source,.)) \
+		--label "io.skploft.restreamer.components=ffmpeg:$(call git_revision,$(FFMPEG_DIR)),core:$(call git_revision,$(CORE_DIR)),restreamer-ui:$(call git_revision,$(RESTREAMER_UI_DIR))" \
 		-t "$(BUNDLE_IMAGE):$(BUNDLE_TAG)" \
-		.
+		"$(ROOT_BUILD_CONTEXT)"
 
 build-default:
 	$(MAKE) build FFMPEG_FLAVOR=default
@@ -167,6 +217,11 @@ build-cuda:
 
 build-vaapi:
 	$(MAKE) build FFMPEG_FLAVOR=vaapi
+
+# Release builds prove the pins match the checked-out sources, tag every image by component SHA
+# and write the bill of materials under releases/. Local `make build` stays as it is.
+release: check-submodules
+	@DOCKER="$(DOCKER)" FFMPEG_VERSION="$(FFMPEG_VERSION)" RELEASE_DIR="$(RELEASE_DIR)" ./scripts/build-release.sh "$(FFMPEG_FLAVOR)"
 
 # Keep runtime state under the repo by default so local smoke tests are easy to clean up.
 # The DRM device is required for the hardware AV1 coders (av1_vaapi, av1_qsv).

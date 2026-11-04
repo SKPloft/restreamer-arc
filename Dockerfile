@@ -1,6 +1,9 @@
-ARG RESTREAMER_UI_IMAGE=datarhei/restreamer-ui:latest
-ARG CORE_IMAGE=datarhei/base:alpine-core-latest
-ARG FFMPEG_IMAGE=datarhei/base:alpine-ffmpeg-latest
+# The three component images have no defaults on purpose: a bundle assembled from the upstream
+# `latest` tags would be published under this repository's name. `make build` passes all three,
+# and a bare `docker build .` fails on the blank base image instead.
+ARG RESTREAMER_UI_IMAGE
+ARG CORE_IMAGE
+ARG FFMPEG_IMAGE
 
 FROM $RESTREAMER_UI_IMAGE AS restreamer-ui
 FROM $CORE_IMAGE AS core
